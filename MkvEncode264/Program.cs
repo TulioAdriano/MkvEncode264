@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 // ── argument parsing ──────────────────────────────────────────────────────────
 if (args.Length == 0 || args[0] is "-h" or "--help")
@@ -67,6 +68,14 @@ if (deinterlace && !encode)
     encode = true;
 }
 
+string encoder = "h264_nvenc";
+if (encode)
+{
+    encoder = await DetectVideoEncoderAsync();
+    if (encoder != "h264_nvenc")
+        Console.WriteLine($"Note: NVENC not available, falling back to {encoder} (CPU encoding).");
+}
+
 // ── chapter discovery ─────────────────────────────────────────────────────────
 string outputDir = Path.GetDirectoryName(Path.GetFullPath(inputFile))!;
 string baseName  = Path.GetFileNameWithoutExtension(inputFile);
@@ -84,7 +93,8 @@ if (chapters.Count == 0)
 Console.WriteLine($"Input:    {Path.GetFileName(inputFile)}");
 Console.WriteLine($"Chapters: {chapters.Count} ({chaptersPerEp} per episode)");
 Console.WriteLine($"Start EP: {startEp:D2}");
-Console.WriteLine($"Mode:     {(encode ? $"H.264 NVENC (CQ {cq}){(deinterlace ? " + yadif deinterlace" : "")}" : "stream copy")}");
+string encoderLabel = encoder == "h264_nvenc" ? "NVENC" : "CPU (libx264)";
+Console.WriteLine($"Mode:     {(encode ? $"H.264/{encoderLabel} (CQ {cq}){(deinterlace ? " + yadif" : "")}" : "stream copy")}");
 Console.WriteLine();
 
 // ── chapter extraction ────────────────────────────────────────────────────────
@@ -104,17 +114,24 @@ for (int i = 0; i < epCount; i++)
     string outputFile = Path.Combine(outputDir, $"{baseName} - EP{epNum:D2}.mkv");
     string label      = $"ch {chFirst + 1}-{chLast + 1}";
 
-    Console.Write($"  [{i + 1}/{epCount}] EP{epNum:D2} ({label}) ...");
-    if (verbose) Console.WriteLine();
+    string prefix = $"  [{i + 1}/{epCount}] EP{epNum:D2} ({label})";
+    if (verbose) Console.WriteLine($"{prefix} ...");
+
+    Action<double>? onProgress = verbose ? null : pct =>
+    {
+        const int barWidth = 32;
+        int f = (int)(barWidth * Math.Clamp(pct, 0, 1));
+        Console.Write($"\r{prefix} [{new string('#', f)}{new string('.', barWidth - f)}] {pct * 100,3:F0}%");
+    };
 
     try
     {
-        await ExtractChapterAsync(inputFile, merged, outputFile, encode, cq, deinterlace, verbose);
-        if (!verbose) Console.WriteLine(" done");
+        await ExtractChapterAsync(inputFile, merged, outputFile, encode, encoder, cq, deinterlace, verbose, onProgress);
+        if (!verbose) Console.WriteLine($"\r{prefix} done{new string(' ', 40)}");
     }
     catch (Exception ex)
     {
-        if (!verbose) Console.WriteLine(" FAILED");
+        if (!verbose) Console.Error.WriteLine($"\r{prefix} FAILED{new string(' ', 37)}");
         Console.Error.WriteLine($"    -> {ex.Message}");
         failures++;
     }
@@ -192,7 +209,7 @@ static async Task<List<ChapterInfo>> GetChaptersAsync(string inputFile, bool ver
 
 static async Task ExtractChapterAsync(
     string inputFile, ChapterInfo chapter, string outputFile,
-    bool encode, int cq, bool deinterlace, bool verbose)
+    bool encode, string encoder, int cq, bool deinterlace, bool verbose, Action<double>? onProgress)
 {
     double duration = chapter.End - chapter.Start;
 
@@ -218,12 +235,22 @@ static async Task ExtractChapterAsync(
 
     if (encode)
     {
-        // H.264 NVENC – quality-based VBR, original dimensions and framerate are preserved by default
-        psi.ArgumentList.Add("-c:v");    psi.ArgumentList.Add("h264_nvenc");
-        psi.ArgumentList.Add("-preset"); psi.ArgumentList.Add("p6");
-        psi.ArgumentList.Add("-rc:v");   psi.ArgumentList.Add("vbr");
-        psi.ArgumentList.Add("-cq:v");   psi.ArgumentList.Add(cq.ToString());
-        psi.ArgumentList.Add("-b:v");    psi.ArgumentList.Add("0");
+        if (encoder == "h264_nvenc")
+        {
+            // Quality-based VBR; original dimensions and framerate are preserved by default
+            psi.ArgumentList.Add("-c:v");    psi.ArgumentList.Add("h264_nvenc");
+            psi.ArgumentList.Add("-preset"); psi.ArgumentList.Add("p6");
+            psi.ArgumentList.Add("-rc:v");   psi.ArgumentList.Add("vbr");
+            psi.ArgumentList.Add("-cq:v");   psi.ArgumentList.Add(cq.ToString());
+            psi.ArgumentList.Add("-b:v");    psi.ArgumentList.Add("0");
+        }
+        else
+        {
+            // CPU fallback: libx264, CRF uses the same 0-51 scale as NVENC CQ
+            psi.ArgumentList.Add("-c:v");    psi.ArgumentList.Add("libx264");
+            psi.ArgumentList.Add("-preset"); psi.ArgumentList.Add("slow");
+            psi.ArgumentList.Add("-crf");    psi.ArgumentList.Add(cq.ToString());
+        }
     }
     else
     {
@@ -239,12 +266,54 @@ static async Task ExtractChapterAsync(
 
     Task stderrTask = verbose
         ? proc.StandardError.BaseStream.CopyToAsync(Console.OpenStandardError())
-        : (Task)proc.StandardError.ReadToEndAsync();   // drain to prevent deadlock
+        : ReadProgressAsync(proc.StandardError, duration, onProgress);
 
     await Task.WhenAll(proc.WaitForExitAsync(), stderrTask);
 
     if (proc.ExitCode != 0)
         throw new Exception($"ffmpeg exited with code {proc.ExitCode}.");
+}
+
+static async Task<string> DetectVideoEncoderAsync()
+{
+    var psi = new ProcessStartInfo
+    {
+        FileName               = "ffmpeg",
+        RedirectStandardOutput = true,
+        RedirectStandardError  = true,
+        UseShellExecute        = false,
+        CreateNoWindow         = true,
+    };
+    psi.ArgumentList.Add("-hide_banner");
+    psi.ArgumentList.Add("-encoders");
+
+    using var proc = Process.Start(psi)
+        ?? throw new InvalidOperationException("Failed to launch ffmpeg.");
+
+    // Check both streams — FFmpeg may write encoder list to either depending on version/platform
+    var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+    var stderrTask = proc.StandardError.ReadToEndAsync();
+    await Task.WhenAll(stdoutTask, stderrTask);
+    await proc.WaitForExitAsync();
+
+    string output = stdoutTask.Result + stderrTask.Result;
+    return output.Contains("h264_nvenc") ? "h264_nvenc" : "libx264";
+}
+
+static async Task ReadProgressAsync(StreamReader stderr, double totalDuration, Action<double>? onProgress)
+{
+    var timeRx = new Regex(@"\btime=(\d+):(\d+):(\d+\.?\d*)");
+    string? line;
+    while ((line = await stderr.ReadLineAsync()) != null)
+    {
+        if (onProgress is null) continue;
+        var m = timeRx.Match(line);
+        if (!m.Success) continue;
+        double t = int.Parse(m.Groups[1].Value) * 3600
+                 + int.Parse(m.Groups[2].Value) * 60
+                 + double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+        onProgress(Math.Min(t / totalDuration, 1.0));
+    }
 }
 
 record ChapterInfo(double Start, double End, string Title);
