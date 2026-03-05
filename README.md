@@ -116,13 +116,13 @@ Output files are placed next to the source file and named:
 {original name} - EP{NN}.mkv
 ```
 
-For example, processing `Rurouni Kenshin Disc1.mkv` produces:
+For example, processing `My Video Disc1.mkv` produces:
 
 ```
-Rurouni Kenshin Disc1 - EP01.mkv
-Rurouni Kenshin Disc1 - EP02.mkv
-Rurouni Kenshin Disc1 - EP03.mkv
-Rurouni Kenshin Disc1 - EP04.mkv
+My Video Disc1 - EP01.mkv
+My Video Disc1 - EP02.mkv
+My Video Disc1 - EP03.mkv
+My Video Disc1 - EP04.mkv
 ```
 
 ---
@@ -132,31 +132,31 @@ Rurouni Kenshin Disc1 - EP04.mkv
 **Disc 1 — fast stream copy, episodes 1–4:**
 
 ```bash
-MkvEncode264 "Rurouni Kenshin Disc1.mkv"
+MkvEncode264 "My Video Disc1.mkv"
 ```
 
 **Disc 2 — stream copy, starting at EP05:**
 
 ```bash
-MkvEncode264 "Rurouni Kenshin Disc2.mkv" --start-ep 5
+MkvEncode264 "My Video Disc2.mkv" --start-ep 5
 ```
 
 **Disc 2 — encode, starting at EP05 (NVENC used automatically if available):**
 
 ```bash
-MkvEncode264 "Rurouni Kenshin Disc2.mkv" --start-ep 5 --encode
+MkvEncode264 "My Video Disc2.mkv" --start-ep 5 --encode
 ```
 
 **Higher quality encode (CQ/CRF 18) with deinterlacing:**
 
 ```bash
-MkvEncode264 "Rurouni Kenshin Disc2.mkv" --start-ep 5 --encode --cq 18 --deinterlace
+MkvEncode264 "My Video Disc2.mkv" --start-ep 5 --encode --cq 18 --deinterlace
 ```
 
 **Non-standard disc with 2 chapters per episode:**
 
 ```bash
-MkvEncode264 "Rurouni Kenshin Disc5.mkv" --start-ep 17 --chapters-per-ep 2 --encode
+MkvEncode264 "My Video Disc5.mkv" --start-ep 17 --chapters-per-ep 2 --encode
 ```
 
 ---
