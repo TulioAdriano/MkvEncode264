@@ -57,6 +57,17 @@ static class EpisodePlanner
     public static DvdTitle Longest(List<DvdTitle> titles) =>
         titles.OrderByDescending(t => t.Duration).ThenByDescending(t => t.SizeBytes).First();
 
+    /// <summary>
+    /// Best guess of a title's episode count before its chapters are examined (for numbering
+    /// previews). Mirrors the equal-length fallback of <see cref="InferEpisodes"/>.
+    /// </summary>
+    public static int EstimateEpisodes(TimeSpan duration, int chapters)
+    {
+        double total = duration.TotalSeconds;
+        if (total <= 32 * 60 || chapters <= 1) return 1;
+        return Math.Clamp((int)Math.Round(total / TypicalEpisode), 2, Math.Max(2, chapters));
+    }
+
     /// <summary>The IFO entry that corresponds to a MakeMKV title (same chapter count and length).</summary>
     public static IfoTitle? IfoFor(DvdTitle title, DvdStructure dvd) =>
         dvd.Titles.FirstOrDefault(ifo => Matches(ifo, title));
