@@ -1,6 +1,6 @@
 // MkvEncode264 – split MKVs, or DVDs ripped with MakeMKV, into episode files.
 //
-// Program.cs wires the pieces together: Options (command line), Wizard (interactive setup),
+// Program.cs wires the pieces together: Options (command line), Tui (full-screen setup),
 // SourceDiscovery (what to process), Runner (plan, rip, split, progress). See CLAUDE.md.
 
 if (!Options.TryParse(args, out Options o, out string? argError))
@@ -16,24 +16,32 @@ if (o.Help)
 }
 
 // ── what to process ───────────────────────────────────────────────────────────
-bool interactive = o.Inputs.Count == 0 && (o.Interactive || !Console.IsInputRedirected);
+bool interactive = o.Interactive || (o.Inputs.Count == 0 && !Console.IsInputRedirected && !Console.IsOutputRedirected);
 if (o.Inputs.Count == 0 && !interactive)
 {
     Options.PrintHelp();
     return 1;
 }
 
-List<Source> sources;
-ShowInfo?    show = null;
+List<Source>    sources;
+ShowInfo?       show    = null;
+List<DiscPlan>? plans   = null;
+string          encoder = "h264_nvenc";
+
 if (interactive)
 {
-    Wizard.Setup? setup = await Wizard.RunAsync(o);
+    Tui.Setup? setup = await Tui.RunAsync(o);
     if (setup is null)
     {
-        Console.WriteLine("\nCancelled.");
+        Console.WriteLine("Cancelled.");
         return 1;
     }
-    (o, sources, show) = (setup.Options, setup.Sources, setup.Show);
+    (o, sources, show, plans, encoder) = (setup.Options, setup.Sources, setup.Show, setup.Plans, setup.Encoder);
+    if (show is not null)
+    {
+        string year = show.Premiered is { Length: >= 4 } p ? $" ({p[..4]})" : "";
+        Console.WriteLine($"Show:     {show.Name}{year}, {show.Episodes.Count} episode titles from TVmaze");
+    }
 }
 else
 {
@@ -63,8 +71,7 @@ if (o.Deinterlace && !o.Encode)
     o.Encode = true;
 }
 
-string encoder = "h264_nvenc";
-if (o.Encode && !o.ListTitles)
+if (plans is null && o.Encode && !o.ListTitles)
 {
     encoder = await Ffmpeg.DetectEncoderAsync();
     if (encoder != "h264_nvenc")
@@ -96,14 +103,17 @@ if (makemkvcon is not null) Console.WriteLine($"MakeMKV:  {makemkvcon}");
 Console.WriteLine($"Mode:     {Runner.DescribeMode(o, encoder)}");
 Console.WriteLine();
 
-var plans = new List<DiscPlan>();
-for (int i = 0; i < sources.Count; i++)
+if (plans is null)
 {
-    if (!o.Verbose) Ui.Line($"Scanning {i + 1}/{sources.Count}: {sources[i].Name}...");
-    plans.Add(await Runner.PlanAsync(sources[i], o, makemkvcon));
+    plans = [];
+    for (int i = 0; i < sources.Count; i++)
+    {
+        if (!o.Verbose) Ui.Line($"Scanning {i + 1}/{sources.Count}: {sources[i].Name}...");
+        plans.Add(await Runner.PlanAsync(sources[i], o, makemkvcon));
+    }
+    Ui.Clear();
+    Runner.AssignNumbers(plans, o.StartEp);
 }
-Ui.Clear();
-Runner.AssignNumbers(plans, o.StartEp);
 
 if (o.ListTitles)
 {
@@ -115,12 +125,6 @@ if (o.ListTitles)
 Console.WriteLine("Plan:");
 Runner.PrintOverview(plans);
 Console.WriteLine();
-
-if (interactive && !Wizard.Confirm("Start?"))
-{
-    Console.WriteLine("Nothing done.");
-    return 0;
-}
 
 // ── rip and split, one source after another ───────────────────────────────────
 var (done, failed) = await Runner.RunAsync(plans, o, show, encoder);

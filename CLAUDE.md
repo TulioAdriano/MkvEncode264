@@ -15,8 +15,9 @@ It can also take **DVD ISO images or `VIDEO_TS` folders**, singly or a whole fol
 commands) to work out where the episodes are, drives MakeMKV's console tool (`makemkvcon`) to
 rip the needed title(s) to a temporary MKV, and runs the same chapter split. Episode numbers
 continue from one source to the next. With `--show <name>` the output files are named after the
-show with episode titles fetched from TVmaze. Started without arguments it runs a short
-text-based setup (source, show, first episode, video mode), shows the plan and asks to start.
+show with episode titles fetched from TVmaze. Started without arguments it opens a full-screen,
+keyboard-driven setup screen in the terminal (nmtui-style, drawn with `System.Console` only)
+for source, show, first episode and video mode, then a plan screen with Start/Back.
 
 **Origin story:** The author has DVDs of the anime *Rurouni Kenshin*, where each disc's MKV rip
 contains 4 episodes back-to-back, with each episode spanning 4 chapters (16 chapters total per
@@ -47,9 +48,10 @@ video using the `yadif` FFmpeg filter.
 `Program.cs` runs these steps:
 
 1. **Options** (`Options.TryParse`) — a hand-rolled loop over `args`; positional arguments are
-   inputs, `-`-prefixed ones are options. No inputs + interactive console (or `--interactive`)
-   → `Wizard.RunAsync` asks for source, show, first episode and video mode, using any options
-   given on the command line as defaults. No inputs + redirected input → help, exit 1.
+   inputs, `-`-prefixed ones are options. No inputs on a real console, or `--interactive`
+   → `Tui.RunAsync` shows the setup screen (fields pre-filled from the options), scans and
+   plans the sources itself and returns `Tui.Setup` (options, sources, show, plans, encoder),
+   so `Program.cs` skips its own lookup/planning. No inputs + redirected console → help, exit 1.
 2. **Sources** (`SourceDiscovery.TryDiscover`) — each input becomes a `Source` (`Mkv`,
    `DvdImage` or `DvdFolder`); a folder that is not itself a DVD expands to the `*.iso` files
    and DVD folders inside it, sorted naturally ("Disc 2" before "Disc 10").
@@ -66,7 +68,8 @@ video using the `yadif` FFmpeg filter.
    its first episode number; counts for `AutoChapters` jobs are estimates
    (`EpisodePlanner.EstimateEpisodes`, shown with `~`/"about").
 6. **Overview** (`Runner.PrintOverview`, or `Runner.PrintDetails` per source with
-   `--list-titles`, which then exits). In interactive mode `Wizard.Confirm` asks before ripping.
+   `--list-titles`, which then exits). In interactive mode the plan screen's *Start* button was
+   the confirmation; the overview is still printed so the scrolling run output has context.
 7. **Run** (`Runner.RunAsync`) — sources one after another with a `=== Disc i/n: name (EPxx-EPyy) ===`
    banner each; MKV sources go straight to the split, DVD sources through rip → chapters →
    groups → split. Each finished step prints elapsed time, output size and file name. The
@@ -238,9 +241,16 @@ folder: next to the folder). `{base}` is the source name, or the show's name wit
 - **Plan everything first, then run** — a batch scans every source (a few seconds each) before
   the first rip so the overview, the numbering and any skipped sources are visible up front;
   in interactive mode this is also the confirmation point.
-- **Text-based front-end instead of a GUI** — the no-argument wizard is plain
-  `Console.ReadLine` prompts (no Spectre/Terminal.Gui dependency, works over SSH, AOT-safe). It
-  only asks the four things that change per run; everything else stays a command-line option.
+- **Text-based front-end instead of a GUI** — `Tui.cs` is a small self-contained widget set
+  (`TextField`, `Radio`, `Button`, `ListBox`, `Label`, `Form`) drawn into a `Canvas` (char +
+  style per cell) and painted by `Terminal` with `Console.SetCursorPosition` and colour runs; keys
+  come from `Console.ReadKey(true)` with `TreatControlCAsInput`. No Terminal.Gui/Spectre
+  dependency (AOT-safe, works over SSH). Box drawing is UTF-8 (`OutputEncoding` is set); radio
+  marks are `(X)` so they survive any font; colours assume a dark terminal; no mouse. The whole
+  frame is redrawn after every key (80×22 cells, negligible). It only asks the four things that
+  change per run; everything else stays a command-line option. Headless testing: the
+  `MKVENCODE264_TUI_KEYS` key script replaces `ReadKey` and `MKVENCODE264_TUI_DUMP=1` prints
+  every frame as text instead of painting.
 - **Robot-mode parsing is tolerant** — `MakeMkv.ParseFields` splits on commas outside double
   quotes and honours backslash escapes; unknown line kinds are ignored; success is judged by exit
   code plus presence of `TCOUNT`/`TINFO` (scan) or the output file (rip), not by message codes,
@@ -287,8 +297,10 @@ There is no test project. What was verified, and how:
   the source name: `FAKE_DISC` (64 s / 16 ch, 16 s / 4 ch, and a title that always fails),
   `SERIES` (96-min play-all + four 24-min episode titles + trailer) and `HAMUTARO` (mirrors the
   real disc, backed by a 98-minute 17-chapter sample). A batch folder mixing those plus a DVD
-  folder exercised discovery, numbering and per-disc banners; the wizard was driven with piped
-  answers via `--interactive` (note: the Bash tool wrapper mangles `\\n` in `printf` strings).
+  folder exercised discovery, numbering and per-disc banners. The setup screen was driven
+  headlessly, e.g. `MKVENCODE264_TUI_DUMP=1 MKVENCODE264_TUI_KEYS="tab hamtaro tab tab down
+  down enter tab tab enter enter" MkvEncode264 <batch folder> --interactive ...`, checking the
+  dumped frames (field notes, TVmaze match, radio state, scan status, plan list, Back, Esc).
 - **Chapter inference** on generated MKVs with chapter patterns `[90, 600, 660, 120] × 4`, with
   and without a leading or trailing extra chapter (needs `-map_chapters 1` when remuxing a new
   chapter list with ffmpeg).
@@ -303,7 +315,8 @@ There is no test project. What was verified, and how:
 - `MkvEncode264/Program.cs` — entry point: options → wizard or discovery → planning →
   overview/listing → run (top-level statements, ~120 lines)
 - `MkvEncode264/Options.cs` — `Options` record-like class, `TryParse`, help text
-- `MkvEncode264/Wizard.cs` — interactive setup prompts and `Confirm`
+- `MkvEncode264/Tui.cs` — full-screen setup and plan screens: widgets, `Form`, `Canvas`,
+  `Terminal`, key script parsing
 - `MkvEncode264/Sources.cs` — `Source`/`SourceKind`, folder expansion, natural sort
 - `MkvEncode264/Runner.cs` — `DiscPlan`, planning per source, numbering, overview/details
   printing, the batch loop, rip → split, naming, and the `Ui` progress helper
@@ -326,8 +339,10 @@ There is no test project. What was verified, and how:
 - No automated tests exist yet (no test project in the solution).
 - Episode counts in the plan overview are estimates when a disc's structure is unreadable
   (`~` prefix); actual numbering is settled disc by disc while running, so later discs can shift.
-- The wizard asks only for source, show, first episode and video mode; it does not remember
-  previous answers between runs.
+- The setup screen asks only for source, show, first episode and video mode, does not remember
+  previous answers between runs, needs at least 80×22 characters, and has no mouse support or
+  per-disc detail view (use `--list-titles` for the chapter lengths). Progress during the run is
+  the scrolling console output, not a screen.
 - Menu buttons that set a register and let a routing PGC branch on it are followed only as far
   as static jumps reach; discs that compute targets at runtime fall back to the length and
   chapter heuristics. UDF-only ISO images (no ISO 9660 part) cannot be inspected.

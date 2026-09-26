@@ -191,15 +191,22 @@ static class Runner
     /// <summary>One line per source: name, episode numbers, and how the cuts were decided.</summary>
     public static void PrintOverview(List<DiscPlan> plans)
     {
+        foreach (string line in OverviewLines(plans)) Console.WriteLine("  " + line);
+    }
+
+    public static List<string> OverviewLines(List<DiscPlan> plans)
+    {
         int width = plans.Max(p => p.Source.Name.Length);
+        var lines = new List<string>();
         for (int i = 0; i < plans.Count; i++)
         {
             DiscPlan p    = plans[i];
             string   what = p.Error is not null
                 ? $"SKIPPED: {p.Error}"
                 : $"{(p.Estimated ? "about " : "")}{p.ExpectedEpisodes} episode{(p.ExpectedEpisodes == 1 ? "" : "s")}: {string.Join("; ", p.Notes)}";
-            Console.WriteLine($"  {i + 1,3}. {p.Source.Name.PadRight(width)}  {p.EpisodeRange,-11}  {what}");
+            lines.Add($"{i + 1,3}. {p.Source.Name.PadRight(width)}  {p.EpisodeRange,-11}  {what}");
         }
+        return lines;
     }
 
     /// <summary>Everything known about a source: disc tables, menu targets, MakeMKV titles, plan and chapter lengths.</summary>

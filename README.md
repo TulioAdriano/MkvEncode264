@@ -8,7 +8,7 @@ with MakeMKV's console tool and cut into episodes in the same run. Point it at a
 ISOs and it processes them one after another, numbering the episodes across discs. The episode
 layout is read from the disc itself (menu buttons, title lengths, chapter pattern), and with
 `--show` the files are named after the show with episode titles looked up online. Run it
-without arguments for a short interactive setup.
+without arguments for a full-screen setup form in the terminal.
 
 > **Cross-platform** — runs on Windows, Linux, and macOS anywhere .NET 10 and FFmpeg are available.
 
@@ -121,7 +121,7 @@ dotnet publish -c Release -r osx-arm64 --self-contained true -p:PublishSingleFil
 ## Usage
 
 ```
-MkvEncode264                                interactive setup
+MkvEncode264                                opens the setup screen
 MkvEncode264 <input> [<input> ...] [options]
 ```
 
@@ -129,29 +129,43 @@ An input is an MKV file, a DVD ISO image, a folder containing `VIDEO_TS`, or a f
 several ISO images / DVD folders. Several sources are processed one after another and episode
 numbers continue from one source to the next.
 
-### Interactive setup
+### Setup screen
 
-Run the program without arguments and it asks for everything it needs:
+Run the program without arguments and a full-screen form opens in the terminal:
 
 ```
-Source: an ISO image, an MKV, a DVD folder, or a folder holding several ISOs [C:\DVDs]: C:\DVDs\Hamtaro
-      1. HAMUTARO_01.iso  (DVD image, 4.1 GB)
-      2. HAMUTARO_02.iso  (DVD image, 4.0 GB)
-Show name, for file names and episode titles from TVmaze (Enter for none): Hamtaro
-    found: Hamtaro (2002), 107 episode titles
-    first episodes: Hamtaro / The Ham-Ham Clubhouse / Calling all Ham-Hams!
-First episode number [1]:
-Video:
-    1. Keep the original video (fast, lossless)
-    2. Encode to H.264
-    3. Encode to H.264 and deinterlace
-Choice [1]: 3
-Quality 0-51 (lower is better) [20]:
+┌────────────────────────────── MkvEncode264 ──────────────────────────────────┐
+│                                                                              │
+│        Source  C:\DVDs\Hamtaro                                               │
+│                2 sources: HAMUTARO_01.iso, HAMUTARO_02.iso                   │
+│                                                                              │
+│          Show  Hamtaro                                                       │
+│                Hamtaro (2002), 107 titles: Hamtaro / The Ham-Ham Clubhouse~  │
+│                                                                              │
+│ First episode  1                                                             │
+│                                                                              │
+│ Video          ( ) Keep the original video (fast, lossless)                  │
+│                ( ) Encode to H.264                                           │
+│                (X) Encode to H.264 and deinterlace                           │
+│                                                                              │
+│       Quality  20                                                            │
+│                0-51, lower is better                                         │
+│                                                                              │
+│                         <Scan discs>      <Quit>                             │
+│                                                                              │
+│ Tab/arrows move   Enter/Space select   Esc quit                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-It then scans every disc, shows the plan and asks before ripping. Options given on the command
-line (for example `--encode --deinterlace`) become the defaults of the questions. `--interactive`
-forces the setup even when input is redirected.
+Tab and the arrow keys move between fields, Enter or Space selects, Esc quits. Leaving the
+Show field looks the name up on TVmaze and shows the match with its first episode titles, so a
+wrong match is easy to spot. *Scan discs* checks the fields, reads every source and switches to
+the plan screen: one line per disc with its episode range and how the cuts were decided, then
+*Start* to begin ripping (the progress output below follows) or *Back* to change something.
+
+Options given on the command line (for example `--encode --deinterlace`) pre-fill the form;
+`--interactive` opens the screen even when inputs were given. The screen needs a terminal of
+at least 80 by 22 characters and looks best on a dark background.
 
 ### Options
 
@@ -165,7 +179,7 @@ forces the setup even when input is redirected.
 | `--cq <N>` | `20` | Encode quality, `0`–`51` (lower = better; maps to CQ for NVENC, CRF for libx264) |
 | `--deinterlace` | off | Deinterlace video with `yadif` (implies `--encode`) |
 | `--verbose` | off | Print live `ffprobe` / `ffmpeg` / `makemkvcon` output and disc-structure diagnostics |
-| `--interactive` | off | Start the interactive setup even when input is redirected |
+| `--interactive` | off | Open the setup screen even when inputs are given (they pre-fill the form) |
 | `-h`, `--help` | | Show help |
 
 ### DVD options

@@ -18,7 +18,7 @@ sealed class Options
     public bool         KeepMkv       { get; set; }          // DVD sources only
     public int          MinLength     { get; set; } = 120;   // DVD sources only; seconds (MakeMKV's own default)
     public string?      MakeMkvPath   { get; set; }          // DVD sources only
-    public bool         Interactive   { get; set; }          // --interactive: run the setup even with redirected input
+    public bool         Interactive   { get; set; }          // --interactive: open the setup screen even when inputs were given
     public bool         Help          { get; set; }
 
     /// <summary>True when the user fixed how chapters are grouped, overriding what the disc suggests.</summary>
@@ -134,7 +134,7 @@ sealed class Options
         MkvEncode264 – Split MKVs, or DVDs ripped with MakeMKV, into episode files.
 
         USAGE
-          MkvEncode264                          interactive setup (asks for everything below)
+          MkvEncode264                          opens the setup screen
           MkvEncode264 <input> [<input> ...] [options]
 
         INPUTS
@@ -152,7 +152,7 @@ sealed class Options
           --cq <N>               Encode quality 0-51 (default: 20; lower = better)
           --deinterlace          Deinterlace video using yadif (implies --encode)
           --verbose              Print ffprobe / ffmpeg / makemkvcon output and disc diagnostics
-          --interactive          Start the interactive setup even when input is redirected
+          --interactive          Open the setup screen even when inputs are given (they fill the form)
           -h, --help             Show this help text
 
         DVD OPTIONS  (ISO image or folder containing VIDEO_TS; needs MakeMKV installed)
