@@ -88,8 +88,10 @@ folder. The tool drives MakeMKV's console program, `makemkvcon`, and looks for i
 ### NVIDIA GPU (optional, for `--encode`)
 
 Any NVENC-capable GPU (GTX 10-series or newer) with up-to-date drivers is supported on Windows
-and Linux. If no NVENC-capable GPU is detected at runtime, the tool automatically falls back to
-**libx264** (software encoding) — no flags needed.
+and Linux. At startup the tool runs a one-frame test encode with `h264_nvenc`; if it fails (no
+NVIDIA GPU, or a driver older than the NVENC API your FFmpeg build needs — FFmpeg 8 wants
+driver 570 or newer) it prints the reason and falls back to **libx264** (software encoding).
+`--cpu` forces libx264 regardless.
 
 > macOS does not support NVENC. The tool will always use libx264 there.
 
@@ -175,7 +177,8 @@ at least 80 by 22 characters and looks best on a dark background.
 | `--chapters-per-ep <N\|auto>` | `4` (MKV), `auto` (DVD) | Chapters grouped into one episode; `auto` finds the repeating chapter pattern |
 | `--episodes <N>` | | Cut each source into N episodes with an equal number of chapters each |
 | `--show <name>` | | Name files after the show and add episode titles looked up on [TVmaze](https://www.tvmaze.com) |
-| `--encode` | off | Re-encode video to H.264 (NVENC if available, libx264 otherwise) |
+| `--encode` | off | Re-encode video to H.264 (NVENC when it works, libx264 otherwise) |
+| `--cpu` | off | Encode with libx264 on the CPU even if NVENC is available |
 | `--cq <N>` | `20` | Encode quality, `0`–`51` (lower = better; maps to CQ for NVENC, CRF for libx264) |
 | `--deinterlace` | off | Deinterlace video with `yadif` (implies `--encode`) |
 | `--verbose` | off | Print live `ffprobe` / `ffmpeg` / `makemkvcon` output and disc-structure diagnostics |
@@ -193,6 +196,7 @@ These apply when the input is an `.iso` file or a folder containing `VIDEO_TS`.
 | `--keep-mkv` | off | Keep the intermediate MKV produced by MakeMKV next to the source |
 | `--min-length <sec>` | `120` | Ignore titles shorter than this many seconds (MakeMKV's own default) |
 | `--makemkv <path>` | auto | Path to `makemkvcon` if it is not on `PATH` or in the default folder |
+| `--temp-dir <path>` | next to the source | Where MakeMKV writes the intermediate rip; use a local disk when the ISOs live on a network share |
 
 ### Output naming
 
@@ -313,7 +317,14 @@ Finished in 2:41: 2 source(s), 8 episode(s) extracted, 0 failed.
 While a step runs, its line shows a live progress bar. A `~` before an episode range means the
 count is an estimate that is settled once the disc is ripped (only when the disc structure
 could not be read). A source that cannot be planned is skipped and reported at the end; the
-exit code is 1 when anything failed.
+exit code is 1 when anything failed. When every episode of a source fails inside ffmpeg (a
+systemic problem such as an unusable encoder), the batch stops right there, prints ffmpeg's
+error lines and the `--start-ep` to resume with, and removes the empty output files.
+
+**ISOs on a network share:** the intermediate rip is normally written next to the source, so
+with a NAS it crosses the network twice (MakeMKV writes it, ffmpeg reads it back). Pass
+`--temp-dir` pointing at a local disk to keep that traffic local; only the finished episodes
+then go to the share.
 
 ### MKV sources
 

@@ -6,6 +6,7 @@ sealed class Options
     public List<string> Inputs        { get; } = [];
     public int          StartEp       { get; set; } = 1;
     public bool         Encode        { get; set; }
+    public bool         Cpu           { get; set; }          // --cpu: libx264 even when NVENC works
     public int          Cq            { get; set; } = 20;
     public bool         Deinterlace   { get; set; }
     public bool         Verbose       { get; set; }
@@ -18,13 +19,14 @@ sealed class Options
     public bool         KeepMkv       { get; set; }          // DVD sources only
     public int          MinLength     { get; set; } = 120;   // DVD sources only; seconds (MakeMKV's own default)
     public string?      MakeMkvPath   { get; set; }          // DVD sources only
+    public string?      TempDir       { get; set; }          // DVD sources only: where the MakeMKV work folder goes
     public bool         Interactive   { get; set; }          // --interactive: open the setup screen even when inputs were given
     public bool         Help          { get; set; }
 
     /// <summary>True when the user fixed how chapters are grouped, overriding what the disc suggests.</summary>
     public bool ChapterOverride => ChaptersPerEp is not null || ChaptersAuto || Episodes is not null;
 
-    public bool AnyDvdOption => ListTitles || KeepMkv || TitleSpec != "auto" || MinLength != 120 || MakeMkvPath is not null;
+    public bool AnyDvdOption => ListTitles || KeepMkv || TitleSpec != "auto" || MinLength != 120 || MakeMkvPath is not null || TempDir is not null;
 
     public static bool TryParse(string[] args, out Options o, out string? error)
     {
@@ -49,6 +51,10 @@ sealed class Options
 
                 case "--encode":
                     o.Encode = true;
+                    break;
+
+                case "--cpu":
+                    o.Cpu = true;
                     break;
 
                 case "--chapters-per-ep" when hasValue:
@@ -110,6 +116,10 @@ sealed class Options
                     o.MakeMkvPath = args[++i];
                     break;
 
+                case "--temp-dir" when hasValue:
+                    o.TempDir = Path.GetFullPath(args[++i]);
+                    break;
+
                 case "--interactive":
                     o.Interactive = true;
                     break;
@@ -148,7 +158,8 @@ sealed class Options
                                  'auto' detects the repeating chapter pattern, the default for DVD titles)
           --episodes <N>         Cut each source into N episodes with an equal number of chapters
           --show <name>          Name files after the show and add episode titles looked up on TVmaze
-          --encode               Encode video to H.264 (NVENC, or libx264 when unavailable)
+          --encode               Encode video to H.264 (NVENC when it works, libx264 otherwise)
+          --cpu                  Encode with libx264 on the CPU even if NVENC is available
           --cq <N>               Encode quality 0-51 (default: 20; lower = better)
           --deinterlace          Deinterlace video using yadif (implies --encode)
           --verbose              Print ffprobe / ffmpeg / makemkvcon output and disc diagnostics
@@ -163,6 +174,8 @@ sealed class Options
           --keep-mkv             Keep the intermediate MKV produced by MakeMKV next to the source
           --min-length <sec>     Ignore titles shorter than this (default: 120)
           --makemkv <path>       Path to makemkvcon if it is not on PATH or in the default folder
+          --temp-dir <path>      Where MakeMKV writes the intermediate rip (default: next to the
+                                 source; use a local disk when the ISOs are on a network share)
 
         EXAMPLES
           MkvEncode264

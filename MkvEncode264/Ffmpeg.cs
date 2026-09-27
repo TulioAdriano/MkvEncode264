@@ -89,19 +89,28 @@ static class Ffmpeg
             ?? throw new InvalidOperationException("Failed to launch ffmpeg. Is FFmpeg installed and in PATH?");
         ChildProcess.Current = proc;
 
+        var  lastLines  = new List<string>();
         Task stderrTask = o.Verbose
             ? proc.StandardError.BaseStream.CopyToAsync(Console.OpenStandardError())
-            : ReadProgressAsync(proc.StandardError, duration, onProgress);
+            : ReadProgressAsync(proc.StandardError, duration, onProgress, lastLines);
 
         await Task.WhenAll(proc.WaitForExitAsync(), stderrTask);
         ChildProcess.Current = null;
 
         if (proc.ExitCode != 0)
-            throw new Exception($"ffmpeg exited with code {proc.ExitCode}.");
+        {
+            string detail = lastLines.Count == 0 ? "" : "\n       " + string.Join("\n       ", lastLines);
+            throw new FfmpegException($"ffmpeg exited with code {proc.ExitCode}.{detail}");
+        }
     }
 
-    /// <summary>"h264_nvenc" when FFmpeg lists the NVENC encoder, otherwise "libx264".</summary>
-    public static async Task<string> DetectEncoderAsync()
+    /// <summary>
+    /// "h264_nvenc" when a one-frame test encode with NVENC succeeds, otherwise "libx264" with
+    /// the reason. ffmpeg lists h264_nvenc whenever it was built with it, even on machines
+    /// without an NVIDIA GPU or with a driver too old for its NVENC API, so the encoder is
+    /// tried rather than looked up.
+    /// </summary>
+    public static async Task<(string Encoder, string? Reason)> DetectEncoderAsync()
     {
         var psi = new ProcessStartInfo
         {
@@ -112,19 +121,36 @@ static class Ffmpeg
             CreateNoWindow         = true,
         };
         psi.ArgumentList.Add("-hide_banner");
-        psi.ArgumentList.Add("-encoders");
+        psi.ArgumentList.Add("-v");         psi.ArgumentList.Add("error");
+        psi.ArgumentList.Add("-f");         psi.ArgumentList.Add("lavfi");
+        psi.ArgumentList.Add("-i");         psi.ArgumentList.Add("color=size=640x480:rate=30");
+        psi.ArgumentList.Add("-frames:v");  psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-c:v");       psi.ArgumentList.Add("h264_nvenc");
+        psi.ArgumentList.Add("-f");         psi.ArgumentList.Add("null");
+        psi.ArgumentList.Add("-");
 
         using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to launch ffmpeg.");
+            ?? throw new InvalidOperationException("Failed to launch ffmpeg. Is FFmpeg installed and in PATH?");
 
-        // Check both streams — FFmpeg may write the encoder list to either depending on version/platform
         var stdoutTask = proc.StandardOutput.ReadToEndAsync();
         var stderrTask = proc.StandardError.ReadToEndAsync();
         await Task.WhenAll(stdoutTask, stderrTask);
         await proc.WaitForExitAsync();
 
-        string output = stdoutTask.Result + stderrTask.Result;
-        return output.Contains("h264_nvenc") ? "h264_nvenc" : "libx264";
+        if (proc.ExitCode == 0) return ("h264_nvenc", null);
+
+        string detail = string.Join(" | ", LastLines(stderrTask.Result, 2));
+        return ("libx264", detail.Length > 0 ? detail : $"the NVENC test encode exited with code {proc.ExitCode}");
+    }
+
+    /// <summary>The last meaningful lines of an ffmpeg log (no progress lines, no blanks).</summary>
+    static List<string> LastLines(string log, int count)
+    {
+        var lines = log.Split('\n', '\r')
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0 && !l.Contains("time=") && !l.StartsWith("Press [q]"))
+            .ToList();
+        return lines.Skip(Math.Max(0, lines.Count - count)).ToList();
     }
 
     static async Task<JsonNode?> ProbeJsonAsync(string inputFile, string showOption, bool verbose)
@@ -159,15 +185,25 @@ static class Ffmpeg
         return JsonNode.Parse(stdoutTask.Result);
     }
 
-    static async Task ReadProgressAsync(StreamReader stderr, double totalDuration, Action<double>? onProgress)
+    /// <summary>Drives the progress bar from ffmpeg's "time=" lines and keeps the last few other lines for error reports.</summary>
+    static async Task ReadProgressAsync(StreamReader stderr, double totalDuration, Action<double>? onProgress, List<string> lastLines)
     {
         var timeRx = new Regex(@"\btime=(\d+):(\d+):(\d+\.?\d*)");
         string? line;
         while ((line = await stderr.ReadLineAsync()) != null)
         {
-            if (onProgress is null) continue;
             var m = timeRx.Match(line);
-            if (!m.Success) continue;
+            if (!m.Success)
+            {
+                string trimmed = line.Trim();
+                if (trimmed.Length > 0 && !trimmed.StartsWith("Press [q]"))
+                {
+                    lastLines.Add(trimmed);
+                    if (lastLines.Count > 4) lastLines.RemoveAt(0);
+                }
+                continue;
+            }
+            if (onProgress is null) continue;
             double t = int.Parse(m.Groups[1].Value) * 3600
                      + int.Parse(m.Groups[2].Value) * 60
                      + double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
@@ -175,6 +211,9 @@ static class Ffmpeg
         }
     }
 }
+
+/// <summary>An ffmpeg extraction failed; the message includes ffmpeg's last log lines.</summary>
+class FfmpegException(string message) : Exception(message);
 
 /// <summary>Tracks the external process currently running so Ctrl+C can stop it before we exit.</summary>
 static class ChildProcess

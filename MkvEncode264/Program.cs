@@ -73,9 +73,16 @@ if (o.Deinterlace && !o.Encode)
 
 if (plans is null && o.Encode && !o.ListTitles)
 {
-    encoder = await Ffmpeg.DetectEncoderAsync();
-    if (encoder != "h264_nvenc")
-        Console.WriteLine($"Note: NVENC not available, falling back to {encoder} (CPU encoding).");
+    if (o.Cpu)
+    {
+        encoder = "libx264";
+    }
+    else
+    {
+        (encoder, string? reason) = await Ffmpeg.DetectEncoderAsync();
+        if (encoder != "h264_nvenc")
+            Console.WriteLine($"Note: NVENC is not usable here ({reason}); encoding with libx264 on the CPU.");
+    }
 }
 
 string? makemkvcon = anyDvd ? MakeMkv.Locate(o.MakeMkvPath) : null;

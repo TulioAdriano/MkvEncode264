@@ -303,9 +303,10 @@ static class Runner
                 continue;
             }
 
+            int epStart = ep;
             Console.WriteLine($"=== {label}{plan.Source.Name}  ({Range(ep, plan.ExpectedEpisodes)}) ===");
             var clock = Stopwatch.StartNew();
-            var (d, f, consumed) = plan.Source.IsDvd
+            var (d, f, consumed, extractFailed) = plan.Source.IsDvd
                 ? await RunDvdAsync(plan, ep, o, show, encoder, problems)
                 : await RunMkvAsync(plan, ep, o, show, encoder, problems);
             done   += d;
@@ -313,6 +314,18 @@ static class Runner
             ep     += consumed;
             Console.WriteLine($"    {d} episode(s) done{(f > 0 ? $", {f} failed" : "")} in {Ui.Time(clock.Elapsed)}");
             Console.WriteLine();
+
+            // Every episode of this source died in ffmpeg: the cause is almost certainly systemic
+            // (encoder, disk, output path), so do not grind through the remaining sources.
+            if (d == 0 && extractFailed > 0 && i + 1 < plans.Count)
+            {
+                int remaining = plans.Count - i - 1;
+                Console.Error.WriteLine($"Stopping: every episode of {plan.Source.Name} failed in ffmpeg (see the messages above).");
+                Console.Error.WriteLine($"{remaining} source(s) were not processed. Fix the cause, then run again with --start-ep {epStart}.");
+                problems.Add($"{remaining} source(s) not processed after {plan.Source.Name} failed");
+                failed += remaining;
+                break;
+            }
         }
 
         Console.WriteLine($"Finished in {Ui.Time(total.Elapsed)}: {plans.Count} source(s), {done} episode(s) extracted, {failed} failed.");
@@ -320,24 +333,24 @@ static class Runner
         return (done, failed);
     }
 
-    static async Task<(int Done, int Failed, int Consumed)> RunMkvAsync(
+    static async Task<(int Done, int Failed, int Consumed, int ExtractFailed)> RunMkvAsync(
         DiscPlan plan, int epStart, Options o, ShowInfo? show, string encoder, List<string> problems)
     {
         var (done, failed) = await SplitAsync(plan.Source.Path, plan.MkvChapters, plan.MkvGroups, epStart,
                                               plan.Source.OutputDir, BaseName(plan.Source, o, show), show, o, encoder, problems);
-        return (done, failed, plan.MkvGroups.Count);
+        return (done, failed, plan.MkvGroups.Count, failed);
     }
 
-    static async Task<(int Done, int Failed, int Consumed)> RunDvdAsync(
+    static async Task<(int Done, int Failed, int Consumed, int ExtractFailed)> RunDvdAsync(
         DiscPlan plan, int epStart, Options o, ShowInfo? show, string encoder, List<string> problems)
     {
         Source source     = plan.Source;
         string makemkvcon = MakeMkv.Locate(o.MakeMkvPath)!;   // planning already checked it exists
         string spec       = MakeMkv.SourceSpec(source.Path);
         string baseName   = BaseName(source, o, show);
-        int    ep = epStart, done = 0, failed = 0;
+        int    ep = epStart, done = 0, failed = 0, extractFailed = 0;
 
-        tempDir = Path.Combine(source.OutputDir, $"{source.Stem}.makemkv-tmp");
+        tempDir = Path.Combine(o.TempDir ?? source.OutputDir, $"{source.Stem}.makemkv-tmp");
         try
         {
             for (int i = 0; i < plan.Jobs.Count; i++)
@@ -385,9 +398,10 @@ static class Runner
                 Console.WriteLine($"        {chapters.Count} chapter(s), {groups.Count} episode(s): {reason}");
 
                 var (d, f) = await SplitAsync(mkv, chapters, groups, ep, source.OutputDir, baseName, show, o, encoder, problems);
-                done   += d;
-                failed += f;
-                ep     += d + f;
+                done          += d;
+                failed        += f;
+                extractFailed += f;
+                ep            += d + f;
 
                 if (o.KeepMkv)
                 {
@@ -397,7 +411,7 @@ static class Runner
                 }
                 else
                 {
-                    File.Delete(mkv);
+                    TryDeleteFile(mkv);
                 }
             }
         }
@@ -407,7 +421,7 @@ static class Runner
             tempDir = null;
         }
 
-        return (done, failed, ep - epStart);
+        return (done, failed, ep - epStart, extractFailed);
     }
 
     /// <summary>Extracts one episode per chapter group; returns how many succeeded and failed.</summary>
@@ -440,7 +454,8 @@ static class Runner
             {
                 Ui.End($"{prefix} FAILED");
                 Console.Error.WriteLine($"    -> {ex.Message}");
-                problems.Add($"{Path.GetFileName(outputFile)}: {ex.Message}");
+                problems.Add($"{Path.GetFileName(outputFile)}: {ex.Message.Split('\n')[0]}");
+                TryDeleteFile(outputFile);   // ffmpeg leaves an empty or partial file behind
                 failed++;
             }
         }
@@ -463,11 +478,46 @@ static class Runner
             : $"{baseName} - EP{epNum:D2} - {ShowLookup.SafeFileName(title)}.mkv";
     }
 
+    /// <summary>Deletes a file, retrying briefly: network shares can report it busy right after use.</summary>
+    static void TryDeleteFile(string path)
+    {
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+                File.Delete(path);
+                return;
+            }
+            catch (IOException) { Thread.Sleep(300); }
+            catch (UnauthorizedAccessException) { Thread.Sleep(300); }
+        }
+    }
+
+    /// <summary>
+    /// Removes the work folder. Files are deleted first and the folder removal is retried,
+    /// because SMB shares can still list a just-deleted file for a moment.
+    /// </summary>
     static void TryDeleteDirectory(string? dir)
     {
         if (dir is null || !Directory.Exists(dir)) return;
-        try { Directory.Delete(dir, recursive: true); }
+        try
+        {
+            foreach (string file in Directory.GetFiles(dir)) TryDeleteFile(file);
+        }
         catch { /* best effort */ }
+
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                if (!Directory.Exists(dir)) return;
+                Directory.Delete(dir, recursive: true);
+                return;
+            }
+            catch (IOException) { Thread.Sleep(500); }
+            catch (UnauthorizedAccessException) { Thread.Sleep(500); }
+        }
     }
 }
 

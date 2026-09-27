@@ -59,8 +59,13 @@ video using the `yadif` FFmpeg filter.
    (`singlesearch/shows?q=`) and fetches `shows/{id}/episodes`, flattened by (season, number)
    into absolute order. The base name becomes the show's TVmaze name and each file gets
    ` - {episode title}` appended (sanitised for file systems). Failures only print a note.
-4. **Encoder detection** (`Ffmpeg.DetectEncoderAsync`, only with `--encode`) — runs
-   `ffmpeg -hide_banner -encoders` and picks `h264_nvenc` when listed, else `libx264`.
+4. **Encoder detection** (`Ffmpeg.DetectEncoderAsync`, only with `--encode` and without
+   `--cpu`) — runs a one-frame test encode (`-f lavfi -i color=... -c:v h264_nvenc -f null -`)
+   and picks `h264_nvenc` only when it exits 0, else `libx264` with ffmpeg's last error lines
+   as the reason. Merely listing encoders is not enough: ffmpeg lists `h264_nvenc` whenever it
+   was built with it, and on a machine without a usable NVIDIA driver every encode then fails
+   with exit code -40 (`AVERROR(ENOSYS)`, "Driver does not support the required nvenc API
+   version"). This happened for real on the user's second PC with a 20-disc batch.
 5. **Planning** (`Runner.PlanAsync` per source, all sources before anything is written) —
    produces a `DiscPlan`: for MKVs the chapter list and groups; for DVDs the disc structure,
    MakeMKV's titles, the `TitleJob`s and the reasoning (`Notes`). A planning failure is stored
@@ -72,8 +77,11 @@ video using the `yadif` FFmpeg filter.
    the confirmation; the overview is still printed so the scrolling run output has context.
 7. **Run** (`Runner.RunAsync`) — sources one after another with a `=== Disc i/n: name (EPxx-EPyy) ===`
    banner each; MKV sources go straight to the split, DVD sources through rip → chapters →
-   groups → split. Each finished step prints elapsed time, output size and file name. The
-   summary line and the list of problems come last; exit code 1 if anything failed.
+   groups → split. Each finished step prints elapsed time, output size and file name. When a
+   source ends with zero episodes done and at least one ffmpeg failure, the batch stops
+   (systemic cause), naming the `--start-ep` to resume with. Failed ffmpeg runs report the
+   tool's last log lines (`FfmpegException`) and their empty/partial output file is deleted.
+   The summary line and the list of problems come last; exit code 1 if anything failed.
 
 ### Splitting one file (`Runner.SplitAsync` → `Ffmpeg.ExtractAsync`)
 
@@ -153,7 +161,7 @@ defaults to fixed groups of 4; `--chapters-per-ep auto` turns on the inference f
      (`ChapterRanges`); otherwise `AutoChapters` defers to the ripped file's chapters.
    `--title longest` / a single id → `AutoChapters`; `all` / several ids → `WholeTitle` each.
 5. **Rip** (`MakeMkv.RipTitleAsync`) — `makemkvcon ... mkv <source> <id> <tempDir>` where
-   `tempDir` is `{outputDir}/{stem}.makemkv-tmp` next to the source. The produced file is found
+   `tempDir` is `{--temp-dir or outputDir}/{stem}.makemkv-tmp`. The produced file is found
    by the name MakeMKV announced (attribute 27) or, failing that, the largest `*.mkv` in the
    temp folder. Failure = non-zero exit, a "Failed to save title" / "Copy complete ... N failed"
    message, or no output file. Title ids are positions in the list produced with the same
@@ -162,9 +170,10 @@ defaults to fixed groups of 4; `--chapters-per-ep auto` turns on the inference f
    chapter markers becomes one episode (duration from `ffprobe -show_format`). A failed rip still
    consumes the episode numbers it would have used. The temp MKV is deleted, or moved next to
    the source with `--keep-mkv` (`{stem}.mkv` for one job, `{stem} - Title{NN}.mkv` for several).
-7. **Cleanup** — the temp folder is deleted in a `finally`, and a `Console.CancelKeyPress`
-   handler kills the running child process (`ChildProcess.Current`) and deletes the temp folder
-   before exiting with code 130.
+7. **Cleanup** — the temp folder is deleted in a `finally` (files first, then the folder, each
+   retried a few times because SMB shares can still list a just-deleted file), and a
+   `Console.CancelKeyPress` handler kills the running child process (`ChildProcess.Current`)
+   and deletes the temp folder before exiting with code 130.
 
 ### Chapter-length inference (`EpisodePlanner.InferEpisodes`)
 
@@ -197,7 +206,8 @@ MkvEncode264 <input> [<input> ...] [options]
 | `--chapters-per-ep <N\|auto>` | `4` for MKV, `auto` for DVD titles | Fixed chapter groups, or infer the pattern |
 | `--episodes <N>` | | Split each source into N episodes with equal chapter counts (remainder to the first ones) |
 | `--show <name>` | | Base name + episode titles from TVmaze |
-| `--encode` | off | Re-encode video to H.264 (NVENC if available, else libx264) |
+| `--encode` | off | Re-encode video to H.264 (NVENC when the test encode works, else libx264) |
+| `--cpu` | off | Force libx264 |
 | `--cq <N>` | `20` | Encode quality 0–51 (lower = better). Maps to NVENC's `-cq:v` and libx264's `-crf` — same scale, comparable quality |
 | `--deinterlace` | off | Apply `yadif` deinterlace filter; implies `--encode` |
 | `--verbose` | off | Stream raw ffprobe/ffmpeg/makemkvcon output; also prints disc-structure diagnostics (file list, nav packs, raw button commands) |
@@ -213,6 +223,7 @@ DVD-only options (ignored with a note when no source is a DVD):
 | `--keep-mkv` | off | Keep the intermediate MakeMKV MKV next to the source |
 | `--min-length <sec>` | `120` | Passed to makemkvcon as `--minlength`; hides short titles |
 | `--makemkv <path>` | auto | Explicit path to `makemkvcon` |
+| `--temp-dir <path>` | next to the source | Parent of the MakeMKV work folder (use a local disk for NAS sources) |
 
 **Output naming:** `{base} - EP{NN}[ - {episode title}].mkv` next to each source (for a DVD
 folder: next to the folder). `{base}` is the source name, or the show's name with `--show`.
@@ -255,9 +266,11 @@ folder: next to the folder). `{base}` is the source name, or the show's name wit
   quotes and honours backslash escapes; unknown line kinds are ignored; success is judged by exit
   code plus presence of `TCOUNT`/`TINFO` (scan) or the output file (rip), not by message codes,
   except for the well-known MSG 5021 "version too old" which adds a hint to the error text.
-- **Temp folder lives next to the source** — a full DVD title is several GB, so it is written to
-  `{name}.makemkv-tmp` beside the ISO rather than `%TEMP%`, which is often on a small system
-  drive. The folder is always removed (normal exit, failure, Ctrl+C).
+- **Temp folder lives next to the source by default** — a full DVD title is several GB, so it
+  is written to `{name}.makemkv-tmp` beside the ISO rather than `%TEMP%`, which is often on a
+  small system drive. `--temp-dir` moves it (the user's ISOs live on a NAS, where a local temp
+  avoids reading the rip back over the network). The folder is always removed (normal exit,
+  failure, Ctrl+C).
 - **TVmaze for names** — keyless, JSON, covers anime and live action; episode numbering is the
   flattened (season, number) order, which matches the tool's absolute `EP{NN}` scheme. A wrong
   or missing match never blocks the rip; `--show` is opt-in because the disc label (e.g.
@@ -351,8 +364,8 @@ There is no test project. What was verified, and how:
 - TVmaze numbering follows the listed version's broadcast order, which may differ from a
   regional DVD release; there is no `--season`/offset option beyond `--start-ep`.
 - No support yet for custom output directories (always writes next to each source) or custom
-  output filename templates; the MakeMKV temp folder is also always next to the source, so the
-  source drive needs free space for one full title (a `--temp-dir` option would fix both).
+  output filename templates. Without `--temp-dir` the source drive needs free space for one
+  full title.
 - Physical drives (`makemkvcon` sources `disc:N` / `dev:...`) and Blu-ray discs are not handled;
   only ISO images and `VIDEO_TS` folders are.
 - `yadif` mode is hardcoded to `mode=0` (one output frame per input frame); `mode=1` (bob,

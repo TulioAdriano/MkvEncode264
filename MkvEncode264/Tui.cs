@@ -35,7 +35,8 @@ static class Tui
         string    lookedUp = "";
         List<Source>   sources = [];
         List<DiscPlan> plans   = [];
-        string encoder = "h264_nvenc";
+        string  encoder = "h264_nvenc";
+        string? encoderNote;
         string? makemkvcon;
 
         enum Next { Stay, Plan, Back, Start, Quit }
@@ -121,7 +122,8 @@ static class Tui
             if (anyRunnable) f.Add(new Button("Start", 26, buttonsY, () => next = Next.Start));
             f.Add(new Button("Back", 36, buttonsY, () => next = Next.Back));
             f.Add(new Button("Quit", 46, buttonsY, () => next = Next.Quit));
-            if (!anyRunnable) f.Status = ("Nothing can be ripped: every source was skipped.", Style.Error);
+            if (!anyRunnable)               f.Status = ("Nothing can be ripped: every source was skipped.", Style.Error);
+            else if (encoderNote is not null) f.Status = (encoderNote, Style.Error);
             f.FocusFirstButton();
             return f;
         }
@@ -212,11 +214,17 @@ static class Tui
             o.Deinterlace = videoMode == 3;
             o.Cq          = cq;
 
-            if (o.Encode)
+            encoderNote = null;
+            if (o.Encode && o.Cpu)
             {
-                form.Status = ("Checking for an NVENC encoder...", Style.Dim);
+                encoder = "libx264";
+            }
+            else if (o.Encode)
+            {
+                form.Status = ("Testing the NVENC encoder...", Style.Dim);
                 Repaint(form);
-                encoder = await Ffmpeg.DetectEncoderAsync();
+                (encoder, string? reason) = await Ffmpeg.DetectEncoderAsync();
+                if (encoder != "h264_nvenc") encoderNote = $"NVENC is not usable here ({reason}); encoding on the CPU instead.";
             }
 
             makemkvcon = sources.Any(s => s.IsDvd) ? MakeMkv.Locate(o.MakeMkvPath) : null;
